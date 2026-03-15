@@ -69,8 +69,19 @@ def load_config() -> dict:
         # Merge: parsed values win, defaults fill gaps
         merged = dict(DEFAULT_CONFIG)
         merged.update({k: v for k, v in parsed.items() if v is not None})
+        _validate_config(merged)
         return merged
     return DEFAULT_CONFIG
+
+
+def _validate_config(config: dict) -> None:
+    """Validate config values for safety."""
+    lang = config.get("language", "python")
+    if lang not in PLUGINS:
+        config["language"] = "python"
+    threshold = config.get("metrics", {}).get("complexity", {}).get("threshold", 15)
+    if not isinstance(threshold, (int, float)) or threshold < 1 or threshold > 100:
+        config.setdefault("metrics", {}).setdefault("complexity", {})["threshold"] = 15
 
 
 def _parse_simple_yaml(text: str) -> dict:
@@ -251,8 +262,14 @@ def _ast_complexity_scan(source_dir: str, threshold: int, suffix: str = ".py") -
         for f in files:
             if not f.endswith(suffix):
                 continue
+            filepath = Path(root, f)
             try:
-                tree = ast.parse(Path(root, f).read_text())
+                if filepath.stat().st_size > 1_000_000:  # skip files > 1 MB
+                    continue
+            except OSError:
+                continue
+            try:
+                tree = ast.parse(filepath.read_text())
                 for node in ast.walk(tree):
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         cc = 1
@@ -391,6 +408,11 @@ def scan_tech_debt(config: dict) -> list[dict]:
                 if not f.endswith(suffix):
                     continue
                 path = os.path.join(root, f)
+                try:
+                    if os.path.getsize(path) > 1_000_000:  # skip files > 1 MB
+                        continue
+                except OSError:
+                    continue
                 try:
                     tree = ast.parse(Path(path).read_text())
                     for node in ast.walk(tree):
