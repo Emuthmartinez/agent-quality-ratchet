@@ -37,6 +37,15 @@ CONFIG_FILE = PROJECT_ROOT / ".ratchet.yaml"
 STATE_FILE = PROJECT_ROOT / ".ratchet-state.json"
 HISTORY_FILE = PROJECT_ROOT / ".ratchet-history.jsonl"
 
+METRICS = [
+    ("lint_violations", "down"),
+    ("complexity_violations", "down"),
+    ("test_count", "up"),
+    ("coverage_percent", "up"),
+]
+
+DEBT_THRESHOLD = 10  # functions above this complexity appear in debt scan
+
 # Default config when no .ratchet.yaml exists
 DEFAULT_CONFIG = {
     "language": "python",
@@ -252,19 +261,28 @@ def _count_test_files(test_dir: str) -> int:
     return count
 
 
-def _ast_complexity_scan(source_dir: str, threshold: int, suffix: str = ".py") -> int:
-    """AST-based complexity scan (Python files only for now)."""
-    if suffix != ".py":
-        return 0  # Only Python AST supported
-    violations = 0
+def _calc_cyclomatic(node: ast.AST) -> int:
+    """Calculate cyclomatic complexity of an AST function node."""
+    cc = 1
+    for child in ast.walk(node):
+        if isinstance(child, (ast.If, ast.For, ast.While, ast.ExceptHandler, ast.With, ast.BoolOp)):
+            cc += 1
+        if isinstance(child, ast.BoolOp):
+            cc += len(child.values) - 1
+    return cc
+
+
+def _walk_python_functions(source_dir: str):
+    """Yield (filepath, node, complexity) for every Python function in source_dir."""
+    skip_dirs = {"__pycache__", ".git", "node_modules", ".venv", "venv"}
     for root, dirs, files in os.walk(source_dir):
-        dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git", "node_modules")]
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
         for f in files:
-            if not f.endswith(suffix):
+            if not f.endswith(".py"):
                 continue
             filepath = Path(root, f)
             try:
-                if filepath.stat().st_size > 1_000_000:  # skip files > 1 MB
+                if filepath.stat().st_size > 1_000_000:
                     continue
             except OSError:
                 continue
@@ -272,17 +290,16 @@ def _ast_complexity_scan(source_dir: str, threshold: int, suffix: str = ".py") -
                 tree = ast.parse(filepath.read_text())
                 for node in ast.walk(tree):
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        cc = 1
-                        for child in ast.walk(node):
-                            if isinstance(child, (ast.If, ast.For, ast.While, ast.ExceptHandler, ast.With, ast.BoolOp)):
-                                cc += 1
-                            if isinstance(child, ast.BoolOp):
-                                cc += len(child.values) - 1
-                        if cc > threshold:
-                            violations += 1
+                        yield str(filepath), node, _calc_cyclomatic(node)
             except (SyntaxError, UnicodeDecodeError):
                 pass
-    return violations
+
+
+def _ast_complexity_scan(source_dir: str, threshold: int, suffix: str = ".py") -> int:
+    """Count functions exceeding complexity threshold (Python only)."""
+    if suffix != ".py":
+        return 0
+    return sum(1 for _, _, cc in _walk_python_functions(source_dir) if cc > threshold)
 
 
 # ---------------------------------------------------------------------------
@@ -400,43 +417,21 @@ def scan_tech_debt(config: dict) -> list[dict]:
 
     items = []
 
-    # Complexity scan (Python only for now — AST-based)
+    # Complexity scan (Python only — reuses shared AST walker)
     if suffix == ".py":
-        for root, dirs, files in os.walk(source_dirs):
-            dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git", "node_modules", ".venv", "venv")]
-            for f in files:
-                if not f.endswith(suffix):
-                    continue
-                path = os.path.join(root, f)
-                try:
-                    if os.path.getsize(path) > 1_000_000:  # skip files > 1 MB
-                        continue
-                except OSError:
-                    continue
-                try:
-                    tree = ast.parse(Path(path).read_text())
-                    for node in ast.walk(tree):
-                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                            cc = 1
-                            for child in ast.walk(node):
-                                if isinstance(child, (ast.If, ast.For, ast.While, ast.ExceptHandler, ast.With, ast.BoolOp)):
-                                    cc += 1
-                                if isinstance(child, ast.BoolOp):
-                                    cc += len(child.values) - 1
-                            if cc > 10:
-                                impact = classify_impact(path, config)
-                                weight = priorities.get(impact, 1.0)
-                                effort = 2.5 if cc > 30 else 1.0 if cc > 15 else 0.0
-                                score = round(min(10, cc / 5) * weight - effort, 2)
-                                items.append({
-                                    "file": path,
-                                    "category": "complexity",
-                                    "description": f"`{node.name}` complexity {cc} (target: 10)",
-                                    "impact": impact,
-                                    "score": score,
-                                })
-                except (SyntaxError, UnicodeDecodeError):
-                    pass
+        for path, node, cc in _walk_python_functions(source_dirs):
+            if cc > DEBT_THRESHOLD:
+                impact = classify_impact(path, config)
+                weight = priorities.get(impact, 1.0)
+                effort = 2.5 if cc > 30 else 1.0 if cc > 15 else 0.0
+                score = round(min(10, cc / 5) * weight - effort, 2)
+                items.append({
+                    "file": path,
+                    "category": "complexity",
+                    "description": f"`{node.name}` complexity {cc} (target: {DEBT_THRESHOLD})",
+                    "impact": impact,
+                    "score": score,
+                })
 
     # Churn scan (language-agnostic — uses git)
     r = _run(["git", "log", "--since=6 months ago", "--format=", "--name-only", "--", source_dirs])
@@ -471,12 +466,7 @@ def scan_tech_debt(config: dict) -> list[dict]:
 def build_report(current: dict, floor: dict | None) -> dict:
     """Build structured report comparing current metrics to floor."""
     metrics = []
-    for key, direction in [
-        ("lint_violations", "down"),
-        ("complexity_violations", "down"),
-        ("test_count", "up"),
-        ("coverage_percent", "up"),
-    ]:
+    for key, direction in METRICS:
         curr = current.get(key, 0)
         flr = floor.get(key) if floor else None
         delta = None
@@ -500,12 +490,7 @@ def print_report(current: dict, floor: dict | None) -> None:
     print(f"{'Metric':<25} {'Current':>10} {'Floor':>10} {'Delta':>12}")
     print("-" * 60)
 
-    for key, direction in [
-        ("lint_violations", "down"),
-        ("complexity_violations", "down"),
-        ("test_count", "up"),
-        ("coverage_percent", "up"),
-    ]:
+    for key, direction in METRICS:
         curr = current.get(key, 0)
         flr = floor.get(key, "—") if floor else "—"
         if floor and key in floor:
@@ -530,10 +515,10 @@ def print_orient(current: dict, debt: list[dict] | None = None) -> None:
 
 
 def print_debt(items: list[dict], filter_impact: str | None = None) -> None:
-    filtered = [i for i in items if i["impact"] == filter_impact] if filter_impact else items
+    if filter_impact:
+        items = [i for i in items if i["impact"] == filter_impact]
     print(f"\n{'Score':>6}  {'Impact':<12} {'Cat':<12} {'File'}")
     print("-" * 75)
-    items = filtered
     for item in items[:20]:
         print(f"{item['score']:6.1f}  {item['impact']:<12} {item['category']:<12} {item['file']}")
         print(f"        {item['description']}")
@@ -562,9 +547,8 @@ def _json_mode() -> bool:
 
 
 def _output(data: dict) -> None:
-    """Output structured JSON (for agents) or fall through to human print."""
-    if _json_mode():
-        print(json.dumps(data, indent=2, default=str))
+    """Output structured JSON. Only called when --json is active."""
+    print(json.dumps(data, indent=2, default=str))
 
 
 def main() -> None:
@@ -649,13 +633,8 @@ def main() -> None:
             print_report(current, floor)
 
     elif cmd == "debt":
-        filter_impact = None
-        if "--growth" in sys.argv:
-            filter_impact = "growth"
-        elif "--reliability" in sys.argv:
-            filter_impact = "reliability"
-        elif "--cost" in sys.argv:
-            filter_impact = "cost"
+        filter_map = {"--growth": "growth", "--reliability": "reliability", "--cost": "cost"}
+        filter_impact = next((v for k, v in filter_map.items() if k in sys.argv), None)
         items = scan_tech_debt(config)
         if filter_impact:
             items = [i for i in items if i["impact"] == filter_impact]
