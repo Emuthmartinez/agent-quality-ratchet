@@ -4,40 +4,94 @@
 
 Measures code quality metrics, stores floors, and fails if quality regresses. Works with Claude Code (hooks + skills) and Codex (scripts + config). All commands support `--json` for structured output, making the tool agent-native.
 
+## Install
+
+**Option A: Copy one file (recommended)**
+
+```bash
+# From inside your project root
+curl -o ratchet.py https://raw.githubusercontent.com/Emuthmartinez/agent-quality-ratchet/main/ratchet.py
+```
+
+**Option B: Clone the repo**
+
+```bash
+git clone https://github.com/Emuthmartinez/agent-quality-ratchet.git
+cp agent-quality-ratchet/ratchet.py /path/to/your/project/
+```
+
+**Option C: Full Claude Code integration**
+
+```bash
+# Copy the engine
+curl -o ratchet.py https://raw.githubusercontent.com/Emuthmartinez/agent-quality-ratchet/main/ratchet.py
+
+# Copy the Claude Code skill (enables /quality-ratchet command)
+mkdir -p .claude/skills/quality-ratchet
+curl -o .claude/skills/quality-ratchet/SKILL.md \
+  https://raw.githubusercontent.com/Emuthmartinez/agent-quality-ratchet/main/.claude/skills/quality-ratchet/SKILL.md
+
+# Copy the SessionStart hook (shows quality status every session)
+mkdir -p .claude/hooks
+curl -o .claude/hooks/ratchet-orient.sh \
+  https://raw.githubusercontent.com/Emuthmartinez/agent-quality-ratchet/main/.claude/hooks/ratchet-orient.sh
+```
+
+Then add the hook to `.claude/settings.json` (see [SessionStart Hook](#as-a-sessionstart-hook) below).
+
+### Requirements
+
+- **Python 3.10+** (stdlib only — zero pip dependencies)
+- Your project's language tools installed separately:
+  - Python: `ruff`, `pytest`, `pytest-cov`
+  - Dart: `dart`, `flutter`
+  - TypeScript: `eslint`, `jest` (via `npx`)
+
 ## How It Works
 
 ```
-measure → floor → enforce → improve → re-measure (floor drops permanently)
+init → floor → enforce → improve → measure (floor tightens permanently)
 ```
 
-1. **Measure** current violations, test count, coverage, complexity
-2. **Store** as floor in `.ratchet-state.json`
-3. **Enforce** on every session/PR — fail if any metric regresses
-4. **Improve** code quality during normal work
-5. **Re-measure** to lock in improvements as the new floor
+1. **Init** — measure current violations, tests, coverage, complexity as baseline
+2. **Enforce** — `check` fails if any metric regresses below the floor
+3. **Improve** — fix violations, add tests during normal work
+4. **Tighten** — `measure` locks in improvements as the new floor
 
 Violations can only go **down**. Tests can only go **up**. Coverage can only go **up**.
 
-## Quick Start
+## Usage
 
 ```bash
-# Copy ratchet.py to your project root (single file, zero dependencies)
-cp ratchet.py /path/to/your/project/
+python ratchet.py init              # Measure baseline (first time)
+python ratchet.py check             # Fail if quality regressed (mandatory gate)
+python ratchet.py measure           # Re-measure and tighten floors
+python ratchet.py orient            # One-line status (for hooks)
+python ratchet.py report            # Full current vs floor comparison
+python ratchet.py debt              # Tech debt ranked by business impact
+python ratchet.py debt --growth     # Growth-path items only
+python ratchet.py debt --reliability # Reliability items only
+python ratchet.py history           # Trend over time
 
-# Initialize (measures current state as baseline)
+# Add --json to any command for structured output
+python ratchet.py check --json
+python ratchet.py debt --growth --json
+```
+
+### Workflow
+
+```bash
+# 1. First time in a project
 python ratchet.py init
 
-# Check (fails if quality regressed)
-python ratchet.py check
+# 2. Before every PR/handoff (mandatory)
+python ratchet.py check     # exits non-zero if regressed
 
-# After improvements, lower the floor
-python ratchet.py measure
+# 3. After you fix violations or add tests
+python ratchet.py measure   # tightens the floor
 
-# See what to work on (ranked by business impact)
-python ratchet.py debt
-
-# Weekly trend report
-python ratchet.py report
+# 4. Find what to work on next
+python ratchet.py debt --growth
 ```
 
 ## Agent-Native Design
@@ -51,7 +105,7 @@ python ratchet.py check --json
 #   "command": "check",
 #   "metrics": [
 #     {"metric": "lint_violations", "current": 0, "floor": 0, "delta": 0, "ok": true},
-#     ...
+#     {"metric": "test_count", "current": 5590, "floor": 5567, "delta": 23, "ok": true}
 #   ],
 #   "failures": []
 # }
@@ -61,8 +115,19 @@ python ratchet.py debt --growth --json
 #   "command": "debt",
 #   "filter": "growth",
 #   "items": [
-#     {"file": "app/services/onboarding.py", "category": "complexity", "impact": "growth", "score": 17.0, ...}
+#     {"file": "app/services/onboarding.py", "category": "complexity",
+#      "impact": "growth", "score": 17.0,
+#      "description": "`generate_plan` complexity 30 (target: 10)"}
 #   ]
+# }
+
+python ratchet.py orient --json
+# {
+#   "command": "orient",
+#   "lint_violations": 0,
+#   "test_count": 5590,
+#   "coverage_percent": 53.0,
+#   "top_debt": {"file": "...", "impact": "reliability", "score": 18.2, ...}
 # }
 ```
 
@@ -70,16 +135,17 @@ python ratchet.py debt --growth --json
 
 | Agent Outcome | Command | What It Returns |
 |---------------|---------|-----------------|
-| Check for regressions | `check --json` | Pass/fail with per-metric deltas |
-| Lock in improvements | `measure --json` | New floor values |
-| Find impactful debt | `debt --json` | Ranked items with file, function, score |
-| Get current status | `orient --json` | Violations, tests, coverage, top debt |
+| Verify no regressions | `check --json` | Pass/fail with per-metric deltas and failures list |
+| Tighten floors | `measure --json` | New floor values after improvement |
+| Find impactful debt | `debt --json` | Ranked items with file, function, impact, score |
+| Session context | `orient --json` | Current violations, tests, coverage, top debt item |
 | Full comparison | `report --json` | Current vs floor for all metrics |
-| View trend | `history --json` | All historical entries |
+| Trend analysis | `history --json` | All historical measurement entries |
+| Set baseline | `init --json` | Initial floor values |
 
 ## Configuration
 
-Create `.ratchet.yaml` in your project root:
+Create `.ratchet.yaml` in your project root (optional — sensible defaults are built in):
 
 ```yaml
 language: python  # python | dart | typescript
@@ -96,18 +162,18 @@ metrics:
     direction: up
   complexity:
     tool: ruff-c90      # or: dart-analyze, eslint-complexity
-    threshold: 15
+    threshold: 15       # functions above this complexity are violations
     direction: down
 
-# Optional: business-impact weighting for tech debt prioritization
+# Business-impact weighting for tech debt prioritization
 priorities:
-  growth: 3.0           # paths matching these keywords get this weight
+  growth: 3.0           # files matching growth keywords get 3x weight
   reliability: 2.0
   cost: 1.5
   retention: 2.0
   default: 1.0
 
-# Optional: keyword-to-impact mapping (content-based, not hardcoded paths)
+# Keyword-to-impact mapping (matches against file paths)
 impact_keywords:
   growth: [onboarding, funnel, activation, signup, registration]
   reliability: [chat, recommendation, generation, streaming]
@@ -115,15 +181,26 @@ impact_keywords:
   retention: [notification, engagement, daily, weekly]
 ```
 
+See `examples/` for ready-to-use configs for Python, Dart, and TypeScript.
+
+### Auto-Detection
+
+Without a `.ratchet.yaml`, the tool:
+- Defaults to Python (ruff/pytest/pytest-cov)
+- Auto-detects source directory (`app/` > `src/` > `lib/` > `.`)
+- Uses sensible defaults for priorities and keywords
+
 ## Claude Code Integration
 
 ### As a Skill (recommended)
 
-Copy `.claude/skills/quality-ratchet/SKILL.md` to your project. Then:
+Copy `.claude/skills/quality-ratchet/SKILL.md` to your project's `.claude/skills/quality-ratchet/`. Then use:
 
 ```
-/quality-ratchet          # Interactive — shows status, suggests actions
+/quality-ratchet
 ```
+
+The skill is outcome-oriented — it tells the agent what to achieve, not just what commands to type.
 
 ### As a SessionStart Hook
 
@@ -142,10 +219,22 @@ Copy `.claude/hooks/ratchet-orient.sh` and add to `.claude/settings.json`:
 }
 ```
 
-Every session starts with quality awareness:
+Every Claude Code session starts with quality context:
 ```
 Ratchet: 0 violations | 5567 tests | 53% coverage
-Top debt: [growth] _regenerate_narratives complexity 56
+Top debt: [growth] generate_first_week_plan complexity 30 (target: 10)
+```
+
+### CLAUDE.md Integration
+
+Add to your project's `CLAUDE.md`:
+
+```markdown
+## Quality Ratchet
+- Before handoff: `python ratchet.py check` (must pass)
+- After improvements: `python ratchet.py measure`
+- For prioritization: `python ratchet.py debt --growth`
+- All commands support `--json` for structured output
 ```
 
 ## Codex Integration
@@ -168,29 +257,30 @@ Add to your `AGENTS.md`:
 
 ## Supported Languages
 
-| Language | Lint Tool | Test Tool | Coverage | Complexity |
-|----------|-----------|-----------|----------|------------|
-| Python | ruff | pytest | pytest-cov | ruff C90 |
-| Dart | dart analyze | flutter test | lcov | dart analyze |
-| TypeScript | eslint | jest/vitest | istanbul | eslint complexity |
+| Language | Lint | Tests | Coverage | Complexity |
+|----------|------|-------|----------|------------|
+| Python | ruff | pytest | pytest-cov | ruff C90 (mccabe) |
+| Dart | dart analyze | flutter test | lcov | AST-based |
+| TypeScript | eslint | jest | istanbul | eslint complexity |
 
 ## Files
 
-| File | Purpose | Versioned? |
-|------|---------|------------|
-| `.ratchet.yaml` | Configuration (language, metrics, priorities) | Yes |
-| `.ratchet-state.json` | Enforced floors (machine-updated) | Yes |
-| `.ratchet-history.jsonl` | Weekly trend data | Optional |
+| File | Purpose | Commit to Git? |
+|------|---------|----------------|
 | `ratchet.py` | Core engine (single file, zero deps) | Yes |
+| `.ratchet.yaml` | Configuration (language, metrics, priorities) | Yes |
+| `.ratchet-state.json` | Enforced floors (auto-updated by measure/init) | Yes |
+| `.ratchet-history.jsonl` | Trend data (appended by measure/init) | Optional |
 
 ## Design Principles
 
-1. **Single file, zero dependencies** — `ratchet.py` runs with just Python 3.10+ stdlib
+1. **Single file, zero dependencies** — runs with Python 3.10+ stdlib only
 2. **Agent-native** — all commands support `--json` for structured output
-3. **Language tools are external** — ratchet calls ruff/eslint/etc. as subprocesses
+3. **Language tools are external** — calls ruff/eslint/dart as subprocesses
 4. **Config over code** — `.ratchet.yaml` defines what to measure
 5. **Floors are monotonic** — violations down, tests up, coverage up. Never backwards.
-6. **Business-aware** — tech debt ranked by impact, not just severity
+6. **Business-aware** — tech debt ranked by impact (growth 3x, reliability 2x), not just severity
+7. **Source auto-detection** — finds `app/`, `src/`, `lib/` automatically
 
 ## License
 

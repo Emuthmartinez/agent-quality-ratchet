@@ -120,8 +120,17 @@ def _measure_python_tests() -> int:
     return 0
 
 
+def _detect_source_dir() -> str:
+    """Auto-detect source directory: app/ > src/ > lib/ > ."""
+    for candidate in ("app", "src", "lib"):
+        if Path(candidate).is_dir():
+            return candidate
+    return "."
+
+
 def _measure_python_coverage() -> float:
-    r = _run([sys.executable, "-m", "pytest", "--cov=.", "--cov-report=term", "-q", "--tb=no"])
+    source = _detect_source_dir()
+    r = _run([sys.executable, "-m", "pytest", f"--cov={source}", "--cov-report=term", "-q", "--tb=no"])
     for line in (r.stdout + r.stderr).splitlines():
         if line.strip().startswith("TOTAL"):
             for part in line.split():
@@ -370,13 +379,7 @@ def scan_tech_debt(config: dict) -> list[dict]:
     lang = config.get("language", "python")
     priorities = config.get("priorities", DEFAULT_CONFIG["priorities"])
     suffix = {"python": ".py", "dart": ".dart", "typescript": ".ts"}.get(lang, ".py")
-    # Auto-detect source directory: use "app" or "src" if they exist, else "."
-    default_source = "."
-    for candidate in ("app", "src", "lib"):
-        if Path(candidate).is_dir():
-            default_source = candidate
-            break
-    source_dirs = config.get("source_dir", {"dart": "lib", "typescript": "src"}.get(lang, default_source))
+    source_dirs = config.get("source_dir", {"dart": "lib", "typescript": "src"}.get(lang, _detect_source_dir()))
 
     items = []
 
