@@ -1,0 +1,26 @@
+language: typescript
+
+metrics:
+  lint_violations:
+    tool: eslint
+    direction: down
+  test_count:
+    tool: jest
+    direction: up
+  coverage:
+    tool: istanbul
+    direction: up
+  complexity:
+    tool: eslint-complexity
+    threshold: 15
+    direction: down
+
+priorities:
+  growth: 3.0
+  reliability: 2.0
+  default: 1.0
+
+impact_keywords:
+  growth: [onboarding, signup, registration, checkout]
+  reliability: [api, auth, payment, streaming]
+  cost: [ai, llm, openai, anthropic]

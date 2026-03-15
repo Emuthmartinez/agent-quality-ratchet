@@ -1,0 +1,27 @@
+language: dart
+
+metrics:
+  lint_violations:
+    tool: dart-analyze
+    direction: down
+  test_count:
+    tool: flutter-test
+    direction: up
+  coverage:
+    tool: lcov
+    direction: up
+  complexity:
+    tool: dart-analyze
+    threshold: 15
+    direction: down
+
+priorities:
+  growth: 3.0
+  reliability: 2.0
+  cost: 1.5
+  default: 1.0
+
+impact_keywords:
+  growth: [onboarding, activation, signup, registration, welcome]
+  reliability: [chat, navigation, streaming, auth]
+  cost: [api, network, firebase, storage]
