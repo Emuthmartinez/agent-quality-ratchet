@@ -2,7 +2,7 @@
 
 **Code quality that only goes up.** A language-agnostic quality enforcement tool for AI-assisted development.
 
-Measures code quality metrics, stores floors, and fails if quality regresses. Works with Claude Code (hooks + skills) and Codex (scripts + config).
+Measures code quality metrics, stores floors, and fails if quality regresses. Works with Claude Code (hooks + skills) and Codex (scripts + config). All commands support `--json` for structured output, making the tool agent-native.
 
 ## How It Works
 
@@ -21,43 +21,79 @@ Violations can only go **down**. Tests can only go **up**. Coverage can only go 
 ## Quick Start
 
 ```bash
-# Install
-pip install agent-quality-ratchet  # or just copy the scripts
+# Copy ratchet.py to your project root (single file, zero dependencies)
+cp ratchet.py /path/to/your/project/
 
 # Initialize (measures current state as baseline)
-ratchet init
+python ratchet.py init
 
 # Check (fails if quality regressed)
-ratchet check
+python ratchet.py check
 
 # After improvements, lower the floor
-ratchet measure
+python ratchet.py measure
 
 # See what to work on (ranked by business impact)
-ratchet debt
+python ratchet.py debt
 
 # Weekly trend report
-ratchet report
+python ratchet.py report
 ```
+
+## Agent-Native Design
+
+Every command supports `--json` for structured output that agents can consume programmatically:
+
+```bash
+python ratchet.py check --json
+# {
+#   "status": "pass",
+#   "command": "check",
+#   "metrics": [
+#     {"metric": "lint_violations", "current": 0, "floor": 0, "delta": 0, "ok": true},
+#     ...
+#   ],
+#   "failures": []
+# }
+
+python ratchet.py debt --growth --json
+# {
+#   "command": "debt",
+#   "filter": "growth",
+#   "items": [
+#     {"file": "app/services/onboarding.py", "category": "complexity", "impact": "growth", "score": 17.0, ...}
+#   ]
+# }
+```
+
+### Capability Map
+
+| Agent Outcome | Command | What It Returns |
+|---------------|---------|-----------------|
+| Check for regressions | `check --json` | Pass/fail with per-metric deltas |
+| Lock in improvements | `measure --json` | New floor values |
+| Find impactful debt | `debt --json` | Ranked items with file, function, score |
+| Get current status | `orient --json` | Violations, tests, coverage, top debt |
+| Full comparison | `report --json` | Current vs floor for all metrics |
+| View trend | `history --json` | All historical entries |
 
 ## Configuration
 
 Create `.ratchet.yaml` in your project root:
 
 ```yaml
-language: python  # python | dart | typescript | ruby | go
+language: python  # python | dart | typescript
 
 metrics:
   lint_violations:
-    tool: ruff          # or: dart-analyze, eslint, rubocop, golangci-lint
+    tool: ruff          # or: dart-analyze, eslint
     direction: down
   test_count:
-    tool: pytest        # or: flutter-test, jest, rspec, go-test
+    tool: pytest        # or: flutter-test, jest
     direction: up
   coverage:
-    tool: pytest-cov    # or: lcov, istanbul, simplecov, go-cover
+    tool: pytest-cov    # or: lcov, istanbul
     direction: up
-    floor: 50           # optional: minimum acceptable
   complexity:
     tool: ruff-c90      # or: dart-analyze, eslint-complexity
     threshold: 15
@@ -91,7 +127,7 @@ Copy `.claude/skills/quality-ratchet/SKILL.md` to your project. Then:
 
 ### As a SessionStart Hook
 
-Add to `.claude/settings.json`:
+Copy `.claude/hooks/ratchet-orient.sh` and add to `.claude/settings.json`:
 
 ```json
 {
@@ -99,7 +135,7 @@ Add to `.claude/settings.json`:
     "SessionStart": [{
       "hooks": [{
         "type": "command",
-        "command": "python ratchet.py orient"
+        "command": "bash .claude/hooks/ratchet-orient.sh"
       }]
     }]
   }
@@ -137,8 +173,6 @@ Add to your `AGENTS.md`:
 | Python | ruff | pytest | pytest-cov | ruff C90 |
 | Dart | dart analyze | flutter test | lcov | dart analyze |
 | TypeScript | eslint | jest/vitest | istanbul | eslint complexity |
-| Ruby | rubocop | rspec | simplecov | rubocop Metrics |
-| Go | golangci-lint | go test | go cover | gocyclo |
 
 ## Files
 
@@ -152,10 +186,11 @@ Add to your `AGENTS.md`:
 ## Design Principles
 
 1. **Single file, zero dependencies** — `ratchet.py` runs with just Python 3.10+ stdlib
-2. **Language tools are external** — ratchet calls ruff/eslint/etc. as subprocesses
-3. **Config over code** — `.ratchet.yaml` defines what to measure
-4. **Floors are monotonic** — violations down, tests up, coverage up. Never backwards.
-5. **Business-aware** — tech debt ranked by impact, not just severity
+2. **Agent-native** — all commands support `--json` for structured output
+3. **Language tools are external** — ratchet calls ruff/eslint/etc. as subprocesses
+4. **Config over code** — `.ratchet.yaml` defines what to measure
+5. **Floors are monotonic** — violations down, tests up, coverage up. Never backwards.
+6. **Business-aware** — tech debt ranked by impact, not just severity
 
 ## License
 

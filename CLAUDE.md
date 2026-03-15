@@ -16,6 +16,15 @@ After improving quality:
 python ratchet.py measure  # Lock in improvements as new floor
 ```
 
+### Agent-Native Output
+
+All commands support `--json` for structured output:
+```bash
+python ratchet.py check --json     # {status, metrics[], failures[]}
+python ratchet.py debt --json      # {items[{file, impact, score}]}
+python ratchet.py orient --json    # {lint_violations, test_count, coverage_percent, top_debt}
+```
+
 ### Key Files
 
 | File | Purpose |

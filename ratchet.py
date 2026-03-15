@@ -14,6 +14,8 @@ Usage:
     python ratchet.py debt          # Prioritized tech debt scan
     python ratchet.py debt --growth # Growth-path items only
     python ratchet.py history       # Show trend over time
+
+    Add --json to any command for structured output (agent-native).
 """
 
 from __future__ import annotations
@@ -441,6 +443,33 @@ def scan_tech_debt(config: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+def build_report(current: dict, floor: dict | None) -> dict:
+    """Build structured report comparing current metrics to floor."""
+    metrics = []
+    for key, direction in [
+        ("lint_violations", "down"),
+        ("complexity_violations", "down"),
+        ("test_count", "up"),
+        ("coverage_percent", "up"),
+    ]:
+        curr = current.get(key, 0)
+        flr = floor.get(key) if floor else None
+        delta = None
+        ok = True
+        if flr is not None:
+            delta = curr - flr
+            ok = (delta <= 0) if direction == "down" else (delta >= 0)
+        metrics.append({
+            "metric": key, "current": curr, "floor": flr,
+            "delta": delta, "ok": ok, "direction": direction,
+        })
+    return {
+        "status": "pass" if all(m["ok"] for m in metrics) else "fail",
+        "metrics": metrics,
+        "language": current.get("language", "unknown"),
+    }
+
+
 def print_report(current: dict, floor: dict | None) -> None:
     print("\n=== Quality Ratchet Report ===\n")
     print(f"{'Metric':<25} {'Current':>10} {'Floor':>10} {'Delta':>12}")
@@ -476,10 +505,10 @@ def print_orient(current: dict, debt: list[dict] | None = None) -> None:
 
 
 def print_debt(items: list[dict], filter_impact: str | None = None) -> None:
-    if filter_impact:
-        items = [i for i in items if i["impact"] == filter_impact]
+    filtered = [i for i in items if i["impact"] == filter_impact] if filter_impact else items
     print(f"\n{'Score':>6}  {'Impact':<12} {'Cat':<12} {'File'}")
     print("-" * 75)
+    items = filtered
     for item in items[:20]:
         print(f"{item['score']:6.1f}  {item['impact']:<12} {item['category']:<12} {item['file']}")
         print(f"        {item['description']}")
@@ -503,6 +532,16 @@ def print_history() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _json_mode() -> bool:
+    return "--json" in sys.argv
+
+
+def _output(data: dict) -> None:
+    """Output structured JSON (for agents) or fall through to human print."""
+    if _json_mode():
+        print(json.dumps(data, indent=2, default=str))
+
+
 def main() -> None:
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
         print(__doc__)
@@ -512,44 +551,77 @@ def main() -> None:
     config = load_config()
 
     if cmd in ("init", "measure"):
+        floor_before = load_state() if cmd == "measure" else None
         current = measure(config)
         save_state(current)
         append_history(current)
-        print_report(current, None if cmd == "init" else load_state())
-        if cmd == "init":
-            print(f"Baseline saved to {STATE_FILE}")
-            print(f"Run `python ratchet.py check` to enforce.")
+        if _json_mode():
+            report = build_report(current, floor_before)
+            report["command"] = cmd
+            _output(report)
         else:
-            print(f"Floor updated. Quality can only improve from here.")
+            print_report(current, floor_before)
+            if cmd == "init":
+                print(f"Baseline saved to {STATE_FILE}")
+                print(f"Run `python ratchet.py check` to enforce.")
+            else:
+                print(f"Floor updated. Quality can only improve from here.")
 
     elif cmd == "check":
         floor = load_state()
         if not floor:
-            print("No baseline. Run `python ratchet.py init` first.")
+            if _json_mode():
+                _output({"status": "error", "message": "No baseline. Run init first."})
+            else:
+                print("No baseline. Run `python ratchet.py init` first.")
             sys.exit(1)
         current = measure(config)
-        print_report(current, floor)
         failures = check_ratchet(current, floor)
-        if failures:
-            print("RATCHET FAILED:")
-            for f in failures:
-                print(f"  {f}")
-            sys.exit(1)
+        if _json_mode():
+            report = build_report(current, floor)
+            report["command"] = "check"
+            report["failures"] = failures
+            _output(report)
         else:
-            print("RATCHET PASSED.")
+            print_report(current, floor)
+            if failures:
+                print("RATCHET FAILED:")
+                for f in failures:
+                    print(f"  {f}")
+            else:
+                print("RATCHET PASSED.")
+        if failures:
+            sys.exit(1)
 
     elif cmd == "orient":
         state = load_state()
         if state:
             debt = scan_tech_debt(config)
-            print_orient(state, debt[:1] if debt else None)
+            if _json_mode():
+                _output({
+                    "command": "orient",
+                    "lint_violations": state.get("lint_violations"),
+                    "test_count": state.get("test_count"),
+                    "coverage_percent": state.get("coverage_percent"),
+                    "top_debt": debt[0] if debt else None,
+                })
+            else:
+                print_orient(state, debt[:1] if debt else None)
         else:
-            print("Ratchet: not initialized. Run `python ratchet.py init`")
+            if _json_mode():
+                _output({"command": "orient", "status": "not_initialized"})
+            else:
+                print("Ratchet: not initialized. Run `python ratchet.py init`")
 
     elif cmd == "report":
         floor = load_state()
         current = measure(config)
-        print_report(current, floor)
+        if _json_mode():
+            report = build_report(current, floor)
+            report["command"] = "report"
+            _output(report)
+        else:
+            print_report(current, floor)
 
     elif cmd == "debt":
         filter_impact = None
@@ -560,10 +632,22 @@ def main() -> None:
         elif "--cost" in sys.argv:
             filter_impact = "cost"
         items = scan_tech_debt(config)
-        print_debt(items, filter_impact)
+        if filter_impact:
+            items = [i for i in items if i["impact"] == filter_impact]
+        if _json_mode():
+            _output({"command": "debt", "filter": filter_impact, "items": items[:20]})
+        else:
+            print_debt(items, filter_impact)
 
     elif cmd == "history":
-        print_history()
+        if _json_mode():
+            entries = []
+            if HISTORY_FILE.exists():
+                for line in HISTORY_FILE.read_text().strip().splitlines():
+                    entries.append(json.loads(line))
+            _output({"command": "history", "entries": entries})
+        else:
+            print_history()
 
     else:
         print(f"Unknown command: {cmd}")
